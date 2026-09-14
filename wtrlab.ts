@@ -9,7 +9,7 @@ class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB (AI)';
   site = 'https://wtr-lab.com/';
-  version = '1.3.2';
+  version = '1.3.3';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
   baggage = '';
@@ -138,9 +138,24 @@ class WTRLAB implements Plugin.PluginBase {
       } catch (e) {
         body = null;
       }
-      const user = body?.user || body?.session?.user;
-      if (user) {
-        return `signed in as ${user.user_name || user.name || user.email || 'unknown user'}`;
+      // wtr-lab nests this differently in places, so check the likely shapes.
+      const user =
+        body?.user ||
+        body?.session?.user ||
+        body?.data?.user ||
+        body?.session?.session?.user;
+      if (typeof user === 'string' && user) {
+        return `signed in (${user})`;
+      }
+      if (user && typeof user === 'object') {
+        const label =
+          user.user_name ||
+          user.name ||
+          user.username ||
+          user.email ||
+          user.id ||
+          '';
+        return label ? `signed in as ${label}` : 'signed in';
       }
       return `NOT signed in (get-session HTTP ${res.status}: ${text
         .slice(0, 60)

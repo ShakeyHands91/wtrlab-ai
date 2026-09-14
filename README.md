@@ -1,8 +1,8 @@
 # WTR-LAB (AI) — personal LNReader plugin repo
 
-A modified build of the official LNReader WTR-LAB plugin that lets you choose which
-translation section to read — **AI**, **Web+**, or **Web** — instead of taking whatever
-the site serves by default.
+A modified build of the official LNReader WTR-LAB plugin that reads the **AI** translation
+section instead of falling back to the machine-translated Web version — and can sign in to a
+wtr-lab account, which is what unlocks AI past the free preview.
 
 Everything here is prebuilt. No Node, no npm, no build step.
 
@@ -10,67 +10,101 @@ Everything here is prebuilt. No Node, no npm, no build step.
 
 ## Installing
 
-Add this URL in LNReader → **Plugins** → **Add repository**:
+LNReader → **Plugins** → **Add repository**:
 
 ```
 https://raw.githubusercontent.com/ShakeyHands91/wtrlab-ai/main/plugins.min.json
 ```
 
-Then install **WTR-LAB (AI)** from that repo.
+Then install **WTR-LAB (AI)**.
 
-It uses the same plugin id (`WTRLAB`) as the official plugin, so existing library entries keep
-working, and it is version `1.2.0` against the official `1.1.6`, so LNReader treats it as newer.
+It keeps the official plugin's id (`WTRLAB`), so existing library entries carry over, and its
+version is ahead of the official `1.1.6` so LNReader treats it as the newer build.
 
-## Plugin settings
+## Signing in
 
-Long-press the plugin in the Plugins list to open its settings.
+wtr-lab gives guests AI translation for **the first 10 chapters of any novel**. Past chapter 10
+it needs an account — that, and not the novel, is why some chapters used to fall back to Web.
+
+Signing in through LNReader's built-in WebView does not work: Google blocks OAuth in embedded
+WebViews, and the app never flushes WebView cookies to disk. Pasting a `Cookie` header does not
+work either — on Android the system cookie store replaces that header whenever it holds cookies
+for the domain. So the plugin redeems an email sign-in link itself:
+
+1. On wtr-lab (any browser), choose **Continue with Email** and request a link
+2. In the email, **copy the link address** — do not tap it, or the session lands in that browser
+3. Paste it into the plugin's **Sign-in link** setting
+4. Open any chapter — the notice line should read `signed in as …`
+5. **Clear the Sign-in link field.** The links are single-use; left in place, each app launch
+   retries a dead token and prints a failure line above your chapters
+
+The plugin pulls the `token=` value out of the link and calls
+`/api/auth/magic-link/verify` directly. The emailed URL is a *page* whose JavaScript would
+normally do this; nothing runs that script inside the app, which is why opening the page itself
+achieves nothing.
+
+The session then lives in the app's own cookie store, where it is not subject to the header
+problem above. Sessions run about 30 days and refresh with use, so this is rarely repeated.
+
+**Per device.** Sessions are per-device and links are single-use, so each device needs its own.
+A fresh link is also needed after Settings → Advanced → Clear cookies, clearing app data, or
+reinstalling.
+
+## Settings
+
+Long-press the plugin in the Plugins list.
 
 | Setting | What it does |
 | --- | --- |
-| **Session cookie** | Optional — only for chapters that require a signed-in account. See below. |
-| **Preferred translation** | `AI`, `Web+`, `Web`, or `Custom`. Default is AI. |
-| **Custom translation id** | Only used when Preferred is Custom. The raw value wtr-lab sends as `translate`. |
-| **Fall back to Web…** | On by default. Turn it **off** to get an error instead of silently reading the Web version. |
-| **Show which translation was used** | Prints `Translation: ai` (or `webplus`, `web`, `google (on-device)`) at the top of each chapter. |
+| **Sign-in link** | Paste the emailed link here to sign in. Clear it once AI chapters load. |
+| **Session cookie** | Fallback only; normally leave empty. Android overrides this header when it has its own cookies. |
+| **Preferred translation** | `AI`, `Web+`, `Web`, or `Custom`. Default AI. |
+| **Custom translation id** | Only used when Preferred is Custom — the raw value sent as `translate`. |
+| **Fall back to Web…** | On by default. Off means an error instead of a silent downgrade — useful when diagnosing. |
+| **Show which translation was used** | Prints the translation and sign-in state at the top of each chapter. |
 
-### About the session cookie
-
-Testing showed the AI section answers fine **without** being signed in, so leave this blank to
-start. It exists for chapters that turn out to be account-gated.
-
-If you do need it: sign in to wtr-lab in a browser, open DevTools → Network, click any request
-to wtr-lab.com, and copy the entire value of the **Cookie** request header. Paste that whole
-string in. (`document.cookie` in the Console will not show it — the session cookie is httpOnly.)
-
-Treat that value like a password. It is stored only on your device, and because it lives in a
-settings field rather than in the code, it is never part of anything published here.
-
----
+The notice line looks like `Translation: ai — signed in as Shakey`, with a second line listing
+anything that was skipped and why.
 
 ## Repo layout
 
 | Path | What it is |
 | --- | --- |
-| `plugins.min.json` | The repository manifest — this is the URL LNReader points at. |
+| `plugins.min.json` | The repository manifest — the URL LNReader points at. |
 | `plugins.json` | Same content, readable. Not used by the app. |
-| `dist/wtrlab.js` | The compiled, minified plugin — what LNReader actually downloads and runs. |
-| `src/wtrlab.ts` | Readable TypeScript source, for future edits. |
+| `wtrlab.js` | The compiled, minified plugin — what LNReader downloads and runs. |
+| `wtrlab.ts` | Readable TypeScript source, for future edits. |
 | `public/static/src/en/wtrlab/icon.png` | Plugin icon. |
 
-Editing `src/wtrlab.ts` alone changes nothing — `dist/wtrlab.js` has to be rebuilt from it
-(`npx tsc` against the upstream lnreader-plugins repo, which supplies the `@libs/*` types).
+Editing `wtrlab.ts` alone changes nothing — `wtrlab.js` must be rebuilt from it, compiled
+against the upstream [lnreader-plugins](https://github.com/LNReader/lnreader-plugins) repo
+which supplies the `@libs/*` modules:
+
+```
+npx tsc --project tsconfig.production.json --rootDir plugins
+```
+
+Bump the `version` in both the source and the two manifests, or LNReader won't offer the update.
 
 ## What was changed
 
 Against the official `plugins/english/wtrlab.ts` (v1.1.6):
 
-- Added `pluginSettings` — session cookie, preferred mode, custom mode, fallback toggle, notice toggle.
-- The chapter fetch loop takes its mode list from settings instead of the hardcoded `['ai', 'web']`.
-- `webplus` added as a selectable mode (the Web+ tab on the site) — not supported upstream.
-- The session cookie, when set, is sent as a `Cookie` header on the reader API and chapter-list calls.
-- Clearer errors: which mode failed and why, plus a hint when no cookie is set.
-- Optional per-chapter notice of which translation you actually got.
+- **Sign-in link setting** that extracts the magic-link token and redeems it via the auth API.
+  Only ever tried once per app run, so a single-use token is not burned twice, and refused
+  outright unless the link is an `https://…wtr-lab.com/` address.
+- **`webplus`** added as a selectable mode — the site's Web+ tab, not available upstream.
+- **Explicit mode choice** rather than the hardcoded `['ai', 'web']`, with an optional fallback.
+- **Session check** against `/api/auth/get-session` so the notice reports what the *server*
+  thinks, rather than what the plugin assumes.
+- **Real diagnostics**: each failed attempt reports its HTTP status and where it ended up, and
+  responses are read as text before parsing so an HTML error page is reported rather than
+  throwing.
+- Optional per-chapter notice of the translation actually used.
 
-The upstream project is [LNReader/lnreader-plugins](https://github.com/LNReader/lnreader-plugins).
-If it gets fixes worth having, the changes above are small and self-contained enough to reapply
-to a newer version.
+## Known limitations
+
+- **No reading-progress sync.** A source plugin gets five read-only methods and no hook for
+  finished chapters, and LNReader's tracker list is a hardcoded union of four services. Syncing
+  progress to a wtr-lab account would mean forking the app itself.
+- **WebView sign-in is unusable**, for the reasons above.
