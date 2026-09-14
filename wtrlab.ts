@@ -9,7 +9,7 @@ class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB (AI)';
   site = 'https://wtr-lab.com/';
-  version = '1.3.1';
+  version = '1.3.2';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
   baggage = '';
@@ -19,7 +19,7 @@ class WTRLAB implements Plugin.PluginBase {
     signInUrl: {
       value: '',
       label:
-        'Sign-in link — request "Continue with Email" on wtr-lab, then paste the full link from that email here. The plugin opens it once, which stores the session in the app itself. Clear this field once AI chapters load; the links are single-use and short-lived.',
+        'Sign-in link — request "Continue with Email" on wtr-lab, then paste the full link from that email here (the plugin reads the token out of it and redeems it). Clear this field once AI chapters load; links are single-use and short-lived.',
       type: 'Text',
     },
     sessionCookie: {
@@ -73,25 +73,48 @@ class WTRLAB implements Plugin.PluginBase {
    * @returns a short status line to show the user, or null if nothing was tried.
    */
   async ensureSignedIn(): Promise<string | null> {
-    const signInUrl = (storage.get<string>('signInUrl') || '').trim();
-    if (!signInUrl || this.signInAttempted) return null;
+    const raw = (storage.get<string>('signInUrl') || '').trim();
+    if (!raw || this.signInAttempted) return null;
     this.signInAttempted = true;
 
-    if (!/^https:\/\/([a-z0-9-]+\.)*wtr-lab\.com\//i.test(signInUrl)) {
+    // A full URL must be wtr-lab's own; a bare token is accepted too.
+    if (
+      /^[a-z]+:\/\//i.test(raw) &&
+      !/^https:\/\/([a-z0-9-]+\.)*wtr-lab\.com\//i.test(raw)
+    ) {
       return 'Sign-in link ignored — it is not an https wtr-lab.com address.';
     }
 
+    // The emailed link points at a PAGE whose JavaScript redeems the token.
+    // Nothing runs that script here, so pull the token out and call the
+    // redeem endpoint directly.
+    let token = '';
+    const fromQuery = raw.match(/[?&]token=([^&\s]+)/);
+    if (fromQuery) {
+      token = decodeURIComponent(fromQuery[1]);
+    } else if (/^[A-Za-z0-9_.-]{16,}$/.test(raw)) {
+      token = raw;
+    }
+
+    if (!token) {
+      return 'Sign-in link ignored — no token found. Paste the whole link from the email (it contains "token=").';
+    }
+
+    const verifyUrl = `${this.site}api/auth/magic-link/verify?token=${encodeURIComponent(
+      token,
+    )}&callbackURL=/`;
+
     try {
-      const res = await fetchApi(signInUrl, {
+      const res = await fetchApi(verifyUrl, {
         headers: {
-          'Accept': 'text/html,application/json,*/*',
+          'Accept': 'application/json,text/html,*/*',
           'Referer': this.site,
         },
       });
       const landedOn = (res.url || '').replace(this.site, '/') || 'unknown';
-      return `Sign-in link: HTTP ${res.status}, ended at ${landedOn}`;
+      return `Sign-in: redeem token HTTP ${res.status}, ended at ${landedOn}`;
     } catch (e) {
-      return `Sign-in link failed: ${String(e)}`;
+      return `Sign-in failed: ${String(e)}`;
     }
   }
 
