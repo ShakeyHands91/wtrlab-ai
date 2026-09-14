@@ -9,7 +9,7 @@ class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB (AI)';
   site = 'https://wtr-lab.com/';
-  version = '1.3.0';
+  version = '1.3.1';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
   baggage = '';
@@ -88,9 +88,43 @@ class WTRLAB implements Plugin.PluginBase {
           'Referer': this.site,
         },
       });
-      return `Sign-in link opened: HTTP ${res.status}. If chapters still fall back, request a new link — they expire quickly and only work once.`;
+      const landedOn = (res.url || '').replace(this.site, '/') || 'unknown';
+      return `Sign-in link: HTTP ${res.status}, ended at ${landedOn}`;
     } catch (e) {
       return `Sign-in link failed: ${String(e)}`;
+    }
+  }
+
+  /**
+   * Asks wtr-lab who it thinks we are. This is the ground truth for whether a
+   * session actually survived into the plugin's requests.
+   */
+  async checkSession(): Promise<string> {
+    try {
+      const cookie = this.sessionCookie;
+      const res = await fetchApi(`${this.site}api/auth/get-session`, {
+        headers: {
+          'Accept': 'application/json',
+          ...(cookie ? { Cookie: cookie } : {}),
+        },
+      });
+      const text = await res.text();
+      let body = null;
+      try {
+        body = JSON.parse(text);
+      } catch (e) {
+        body = null;
+      }
+      const user = body?.user || body?.session?.user;
+      if (user) {
+        return `signed in as ${user.user_name || user.name || user.email || 'unknown user'}`;
+      }
+      return `NOT signed in (get-session HTTP ${res.status}: ${text
+        .slice(0, 60)
+        .replace(/<[^>]*>/g, ' ')
+        .trim() || 'empty response'})`;
+    } catch (e) {
+      return `session check failed: ${String(e)}`;
     }
   }
 
@@ -716,9 +750,12 @@ class WTRLAB implements Plugin.PluginBase {
       break;
     }
 
-    const cookieState = cookie
-      ? `session cookie sent (${cookie.length} chars)`
-      : 'no session cookie set';
+    const showNotice = storage.get<boolean>('showModeNotice') !== false;
+    const cookieState = showNotice
+      ? await this.checkSession()
+      : cookie
+        ? `session cookie sent (${cookie.length} chars)`
+        : 'no session cookie set';
 
     if (!usedType || !parsedJson?.data?.data) {
       const errorMsg =
