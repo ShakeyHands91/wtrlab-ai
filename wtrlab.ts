@@ -9,17 +9,23 @@ class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB (AI)';
   site = 'https://wtr-lab.com/';
-  version = '1.2.0';
+  version = '1.3.0';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
   baggage = '';
   trace = '';
 
   pluginSettings = {
+    signInUrl: {
+      value: '',
+      label:
+        'Sign-in link — request "Continue with Email" on wtr-lab, then paste the full link from that email here. The plugin opens it once, which stores the session in the app itself. Clear this field once AI chapters load; the links are single-use and short-lived.',
+      type: 'Text',
+    },
     sessionCookie: {
       value: '',
       label:
-        'Session cookie — sign in to wtr-lab in a browser, open DevTools > Network, click any request and copy the whole value of the "Cookie" request header, then paste it here.',
+        'Session cookie (fallback) — usually leave EMPTY. Android replaces this header with its own stored cookies whenever it has any, so the sign-in link above is the reliable route.',
       type: 'Text',
     },
     preferredMode: {
@@ -54,6 +60,38 @@ class WTRLAB implements Plugin.PluginBase {
   /** Full Cookie header value supplied by the user in plugin settings. */
   get sessionCookie(): string {
     return (storage.get<string>('sessionCookie') || '').trim();
+  }
+
+  /** Only attempt the sign-in link once per app run: the links are single-use. */
+  signInAttempted = false;
+
+  /**
+   * Visits the user's emailed sign-in link once. Any Set-Cookie it returns is
+   * stored by Android's shared cookie jar, which every later request uses
+   * automatically — unlike a Cookie header, which the jar overrides.
+   *
+   * @returns a short status line to show the user, or null if nothing was tried.
+   */
+  async ensureSignedIn(): Promise<string | null> {
+    const signInUrl = (storage.get<string>('signInUrl') || '').trim();
+    if (!signInUrl || this.signInAttempted) return null;
+    this.signInAttempted = true;
+
+    if (!/^https:\/\/([a-z0-9-]+\.)*wtr-lab\.com\//i.test(signInUrl)) {
+      return 'Sign-in link ignored — it is not an https wtr-lab.com address.';
+    }
+
+    try {
+      const res = await fetchApi(signInUrl, {
+        headers: {
+          'Accept': 'text/html,application/json,*/*',
+          'Referer': this.site,
+        },
+      });
+      return `Sign-in link opened: HTTP ${res.status}. If chapters still fall back, request a new link — they expire quickly and only work once.`;
+    } catch (e) {
+      return `Sign-in link failed: ${String(e)}`;
+    }
   }
 
   /** Translation modes to try, in order, based on plugin settings. */
@@ -606,9 +644,13 @@ class WTRLAB implements Plugin.PluginBase {
     const translationTypes = this.translationModes;
     const cookie = this.sessionCookie;
 
-    let eLog = '';
+    const attemptLog: string[] = [];
     let parsedJson;
     let usedType: string | null = null;
+
+    // Establish a session from the emailed link before asking for a chapter.
+    const signInNote = await this.ensureSignedIn();
+    if (signInNote) attemptLog.push(signInNote);
 
     for (const type of translationTypes) {
       const apiResponse = await fetchApi(`${this.site}api/reader/get`, {
@@ -629,23 +671,61 @@ class WTRLAB implements Plugin.PluginBase {
         }),
       });
 
-      parsedJson = await apiResponse.json();
+      // Read as text first: an auth redirect or a Cloudflare challenge returns
+      // HTML, and .json() would throw before we could report what came back.
+      const rawBody = await apiResponse.text();
+      let candidate = null;
+      try {
+        candidate = JSON.parse(rawBody);
+      } catch (e) {
+        candidate = null;
+      }
+
+      if (!candidate) {
+        attemptLog.push(
+          `"${type}": HTTP ${apiResponse.status} — response was not JSON: ${rawBody
+            .slice(0, 150)
+            .replace(/<[^>]*>/g, ' ')
+            .trim()}`,
+        );
+        continue;
+      }
+
+      parsedJson = candidate;
+
       if (!apiResponse.ok) {
-        if (parsedJson.error) {
-          eLog = `"${type}" translation unavailable: ${parsedJson.error}`;
-          continue;
-        }
-      } else if (!parsedJson.error) {
-        usedType = type;
-        break;
+        attemptLog.push(
+          `"${type}": HTTP ${apiResponse.status}${
+            candidate.error ? ' — ' + candidate.error : ''
+          }${candidate.message ? ' — ' + candidate.message : ''}`,
+        );
+        continue;
       }
+      if (candidate.error) {
+        attemptLog.push(`"${type}": ${candidate.error}`);
+        continue;
+      }
+      if (candidate.success === false) {
+        attemptLog.push(
+          `"${type}": ${candidate.message || 'request was not successful'}`,
+        );
+        continue;
+      }
+
+      usedType = type;
+      break;
     }
-    if (parsedJson.success == false) {
-      let errorMsg = parsedJson.message;
-      if (!cookie) {
-        errorMsg +=
-          ' — no session cookie is set. AI translations require a signed-in account: add your cookie in this plugin\'s settings.';
-      }
+
+    const cookieState = cookie
+      ? `session cookie sent (${cookie.length} chars)`
+      : 'no session cookie set';
+
+    if (!usedType || !parsedJson?.data?.data) {
+      const errorMsg =
+        `None of the requested translations could be loaded [${cookieState}]. ` +
+        (attemptLog.length
+          ? attemptLog.join(' | ')
+          : 'The server returned no usable response.');
       console.error(errorMsg);
       throw new Error(errorMsg);
     }
@@ -671,16 +751,17 @@ class WTRLAB implements Plugin.PluginBase {
         return htmlString;
       }
       chapterContent = await this.translate(chapterContent);
-      usedType = 'google (on-device)';
-      htmlString += `<p><small>Translated on your device via Google Translate (the source's own fallback). For AI translations, set a session cookie in this plugin's settings.</small></p>`;
+      usedType = `${usedType} + Google Translate (on-device)`;
     }
 
     if (storage.get<boolean>('showModeNotice') !== false && usedType) {
-      htmlString += `<p><small>Translation: ${usedType}</small></p>`;
+      htmlString += `<p><small>Translation: ${usedType} — ${cookieState}</small></p>`;
     }
 
-    if (eLog !== '') {
-      htmlString += `<p style="color:darkred;">${eLog}</p>`;
+    if (attemptLog.length) {
+      htmlString += `<p style="color:darkred;"><small>Skipped: ${attemptLog.join(
+        ' | ',
+      )}</small></p>`;
     }
 
     const dictionary = chapterGlossary?.terms?.map(t => t[0]) || [];
