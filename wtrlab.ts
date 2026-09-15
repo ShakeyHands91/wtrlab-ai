@@ -9,7 +9,7 @@ class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB (AI)';
   site = 'https://wtr-lab.com/';
-  version = '1.3.3';
+  version = '1.4.0';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
   baggage = '';
@@ -157,10 +157,12 @@ class WTRLAB implements Plugin.PluginBase {
           '';
         return label ? `signed in as ${label}` : 'signed in';
       }
-      return `NOT signed in (get-session HTTP ${res.status}: ${text
-        .slice(0, 60)
-        .replace(/<[^>]*>/g, ' ')
-        .trim() || 'empty response'})`;
+      return `NOT signed in (get-session HTTP ${res.status}: ${
+        text
+          .slice(0, 60)
+          .replace(/<[^>]*>/g, ' ')
+          .trim() || 'empty response'
+      })`;
     } catch (e) {
       return `session check failed: ${String(e)}`;
     }
@@ -404,85 +406,47 @@ class WTRLAB implements Plugin.PluginBase {
         loadedCheerio('.lead').text().trim();
     }
 
-    const genres =
-      loadedCheerio('td:contains("Genre")')
-        .next()
-        .find('a')
-        .map((i, el) =>
-          loadedCheerio(el)
-            .text()
-            .replace(/<!--.*?-->/g, '')
-            .trim(),
-        )
-        .toArray() ||
-      loadedCheerio('.genre')
-        .map((i, el) =>
-          loadedCheerio(el)
-            .text()
-            .replace(/<!--.*?-->/g, '')
-            .trim(),
-        )
-        .toArray() ||
-      loadedCheerio('.genres .genre')
-        .map((i, el) =>
-          loadedCheerio(el)
-            .text()
-            .replace(/<!--.*?-->/g, '')
-            .trim(),
-        )
-        .toArray();
+    // Genres and tags live in __NEXT_DATA__ as numeric ids, not in the page
+    // markup. Tag names are served already resolved in pageProps.tags; genre
+    // names appear only as the text of their chip links.
+    const labels: string[] = [];
 
-    if (genres.length > 0) {
-      novel.genres = genres
-        .map(g => g.replace(/,$/, '').trim())
-        .filter(genre => genre && genre.length > 0)
-        .join(', ');
+    if (nextDataText) {
+      try {
+        const tagData = JSON.parse(nextDataText);
+        const pageProps = tagData?.props?.pageProps;
+        const ids: number[] = pageProps?.serie?.serie_data?.genres || [];
+
+        const genreNames = new Map<number, string>();
+        loadedCheerio('a[href*="novel-list?genre="]').each((i, el) => {
+          const href = loadedCheerio(el).attr('href') || '';
+          const matched = href.match(/genre=(\d+)/);
+          const name = loadedCheerio(el).text().trim();
+          if (matched && name) genreNames.set(parseInt(matched[1], 10), name);
+        });
+
+        for (const id of ids) {
+          const name = genreNames.get(id);
+          if (name) {
+            labels.push(name.charAt(0).toUpperCase() + name.slice(1));
+          }
+        }
+
+        if (Array.isArray(pageProps?.tags)) {
+          for (const tag of pageProps.tags) {
+            const title = tag?.title && String(tag.title).trim();
+            if (title) labels.push(title);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to read genres/tags from __NEXT_DATA__:', error);
+      }
     }
 
-    const tags =
-      loadedCheerio('td:contains("Tags")')
-        .next()
-        .find('a')
-        .map((i, el) =>
-          loadedCheerio(el)
-            .text()
-            .replace(/<!--.*?-->/g, '')
-            .replace(/,$/, '')
-            .trim(),
-        )
-        .toArray() ||
-      loadedCheerio('.tag')
-        .map((i, el) =>
-          loadedCheerio(el)
-            .text()
-            .replace(/<!--.*?-->/g, '')
-            .replace(/,$/, '')
-            .trim(),
-        )
-        .toArray() ||
-      loadedCheerio('.tags .tag')
-        .map((i, el) =>
-          loadedCheerio(el)
-            .text()
-            .replace(/<!--.*?-->/g, '')
-            .replace(/,$/, '')
-            .trim(),
-        )
-        .toArray();
-
-    // console.log('Found tags from HTML:', tags);
-
-    if (tags.length > 0) {
-      const existingGenres = novel.genres ? novel.genres.split(', ') : [];
-      // console.log('Existing genres:', existingGenres);
-      const allGenres = [...existingGenres, ...tags].filter(
-        genre => genre && genre.length > 0,
-      );
-      const uniqueGenres = allGenres.filter(
-        (genre, index) => allGenres.indexOf(genre) === index,
-      );
-      novel.genres = uniqueGenres.join(', ');
-      // console.log('Combined genres:', novel.genres);
+    if (labels.length > 0) {
+      novel.genres = labels
+        .filter((label, index) => labels.indexOf(label) === index)
+        .join(', ');
     }
 
     if (!novel.author) {
@@ -582,7 +546,7 @@ class WTRLAB implements Plugin.PluginBase {
         combined = new Uint8Array(ciphertext.length + tag.length);
 
       // Make the ciphertext + tag format expected for decryption
-      combined.set(ciphertext), combined.set(tag, ciphertext.length);
+      (combined.set(ciphertext), combined.set(tag, ciphertext.length));
 
       // Decrypt with encKey
       // Convert the key to bytes (first 32 characters of encKey)
