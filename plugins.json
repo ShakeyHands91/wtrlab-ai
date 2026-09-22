@@ -4,7 +4,7 @@
 		"name": "WTR-LAB (AI)",
 		"site": "https://wtr-lab.com/",
 		"lang": "English",
-		"version": "1.4.0",
+		"version": "1.5.0",
 		"url": "https://raw.githubusercontent.com/ShakeyHands91/wtrlab-ai/main/wtrlab.js",
 		"iconUrl": "https://raw.githubusercontent.com/ShakeyHands91/wtrlab-ai/main/public/static/src/en/wtrlab/icon.png"
 	}
