@@ -9,7 +9,7 @@ class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB (AI)';
   site = 'https://wtr-lab.com/';
-  version = '1.5.1';
+  version = '1.6.0';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
   baggage = '';
@@ -27,6 +27,28 @@ class WTRLAB implements Plugin.PluginBase {
       label:
         'Session cookie (fallback) — usually leave EMPTY. Android replaces this header with its own stored cookies whenever it has any, so the sign-in link above is the reliable route.',
       type: 'Text',
+    },
+    rawSource: {
+      value: 'default',
+      label:
+        'Raw source — wtr-lab often has the same novel from several raws with different chapter counts',
+      type: 'Select',
+      options: [
+        { label: "The site's own default", value: 'default' },
+        { label: 'Whichever has the most chapters', value: 'most' },
+        { label: 'Custom — set the slug below', value: 'custom' },
+      ],
+    },
+    rawSourceSlug: {
+      value: '',
+      label:
+        'Custom raw source slug (e.g. fanqienovel) — only used when Custom is selected above',
+      type: 'Text',
+    },
+    showRawSources: {
+      value: true,
+      label: 'List the available raw sources in the novel description',
+      type: 'Switch',
     },
     preferredMode: {
       value: 'ai',
@@ -56,6 +78,42 @@ class WTRLAB implements Plugin.PluginBase {
       type: 'Switch',
     },
   };
+
+  /**
+   * Pick which raw source to read. wtr-lab lists several raws per novel, each
+   * with its own id and chapter count; the chapter API is keyed on that id.
+   */
+  chooseRaw(
+    raws: RawSource[],
+    currentRawId: number | null,
+  ): { id: number; label: string } | null {
+    if (!Array.isArray(raws) || raws.length === 0) return null;
+
+    const mode = (storage.get<string>('rawSource') || 'default').trim();
+    const wanted = (storage.get<string>('rawSourceSlug') || '')
+      .trim()
+      .toLowerCase();
+
+    let picked: RawSource | undefined;
+    if (mode === 'most') {
+      picked = raws.reduce(
+        (best, raw) =>
+          (raw?.chapter_count || 0) > (best?.chapter_count || 0) ? raw : best,
+        raws[0],
+      );
+    } else if (mode === 'custom' && wanted) {
+      picked = raws.find(
+        raw => String(raw?.slug || '').toLowerCase() === wanted,
+      );
+    }
+    if (!picked) picked = raws.find(raw => raw?.id === currentRawId);
+    if (!picked) return null;
+
+    return {
+      id: picked.id,
+      label: `${picked.slug || picked.id} (${picked.chapter_count ?? '?'} chapters)`,
+    };
+  }
 
   /** Full Cookie header value supplied by the user in plugin settings. */
   get sessionCookie(): string {
@@ -370,6 +428,26 @@ class WTRLAB implements Plugin.PluginBase {
           rawId = serieData.raw_id || null;
           slug = serieData.slug || null;
 
+          const raws: RawSource[] =
+            jsonData?.props?.pageProps?.serie?.raws || [];
+          const chosen = this.chooseRaw(raws, rawId);
+          if (chosen) rawId = chosen.id;
+
+          if (
+            storage.get<boolean>('showRawSources') !== false &&
+            raws.length > 1
+          ) {
+            const list = raws
+              .map(
+                raw =>
+                  `${raw.slug || raw.id}: ${raw.chapter_count ?? '?'} chapters`,
+              )
+              .join(' | ');
+            novel.summary =
+              `${novel.summary || ''}\n\nRaw sources — ${list}` +
+              (chosen ? `\nReading: ${chosen.label}` : '');
+          }
+
           switch (serieData.status) {
             case 0:
               novel.status = 'Ongoing';
@@ -546,7 +624,7 @@ class WTRLAB implements Plugin.PluginBase {
         combined = new Uint8Array(ciphertext.length + tag.length);
 
       // Make the ciphertext + tag format expected for decryption
-      combined.set(ciphertext), combined.set(tag, ciphertext.length);
+      (combined.set(ciphertext), combined.set(tag, ciphertext.length));
 
       // Decrypt with encKey
       // Convert the key to bytes (first 32 characters of encKey)
@@ -2003,6 +2081,14 @@ type SerieData = {
   from: null;
   raw_id: number;
   genres?: number[];
+};
+
+type RawSource = {
+  id: number;
+  slug?: string;
+  chapter_count?: number;
+  verified?: boolean;
+  view?: number;
 };
 
 type Data = {
