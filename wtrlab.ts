@@ -9,7 +9,7 @@ class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB (AI)';
   site = 'https://wtr-lab.com/';
-  version = '1.5.0';
+  version = '1.5.1';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
   baggage = '';
@@ -546,7 +546,7 @@ class WTRLAB implements Plugin.PluginBase {
         combined = new Uint8Array(ciphertext.length + tag.length);
 
       // Make the ciphertext + tag format expected for decryption
-      (combined.set(ciphertext), combined.set(tag, ciphertext.length));
+      combined.set(ciphertext), combined.set(tag, ciphertext.length);
 
       // Decrypt with encKey
       // Convert the key to bytes (first 32 characters of encKey)
@@ -768,11 +768,15 @@ class WTRLAB implements Plugin.PluginBase {
       console.error(errorMsg);
       throw new Error(errorMsg);
     }
-    let chapterContent = parsedJson.data.data.body;
+    let chapterContent: any = parsedJson.data.data.body;
+    const chapterTitle: string | undefined = parsedJson?.chapter?.title;
     const chapterGlossary: ChapterContent['glossary_data'] | undefined =
       parsedJson?.data?.data?.glossary_data;
 
     let htmlString = '';
+    if (chapterTitle) {
+      htmlString += `<h3>${chapterTitle}</h3>`;
+    }
 
     if (
       chapterContent.toString().startsWith('arr:') ||
@@ -884,8 +888,14 @@ class WTRLAB implements Plugin.PluginBase {
     searchTerm: string,
     page: number,
   ): Promise<Plugin.NovelItem[]> {
-    const filters = this.filters;
-    filters.search.value = searchTerm;
+    // Copy rather than mutate: this.filters is the plugin's own filter
+    // definition object, which the app also reads. Writing the term into it
+    // leaves it there, so every later browse is narrowed to that search and
+    // Reset restores the polluted value.
+    const filters = {
+      ...this.filters,
+      search: { ...this.filters.search, value: searchTerm },
+    };
     return this.popularNovels(page, { showLatestNovels: false, filters });
   }
 
