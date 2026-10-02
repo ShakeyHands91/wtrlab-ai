@@ -9,7 +9,7 @@ class WTRLAB implements Plugin.PluginBase {
   id = 'WTRLAB';
   name = 'WTR-LAB (AI)';
   site = 'https://wtr-lab.com/';
-  version = '1.6.0';
+  version = '1.7.0';
   icon = 'src/en/wtrlab/icon.png';
   sourceLang = 'en/';
   baggage = '';
@@ -118,6 +118,42 @@ class WTRLAB implements Plugin.PluginBase {
   /** Full Cookie header value supplied by the user in plugin settings. */
   get sessionCookie(): string {
     return (storage.get<string>('sessionCookie') || '').trim();
+  }
+
+  /**
+   * Resolve the chapter payload.
+   *
+   * The reader API used to carry the body inline at data.data. It now returns
+   * an envelope with a `content_url` pointing at the real payload, whose inner
+   * shape (body / glossary_data / model) is unchanged. Handle both so the
+   * plugin keeps working either way.
+   */
+  async resolveChapterContent(
+    parsed: ReaderResponse,
+    cookie: string,
+  ): Promise<ChapterContent | null> {
+    const inline = parsed?.data?.data;
+    if (inline && inline.body !== undefined) return inline;
+
+    const contentUrl = parsed?.content_url;
+    if (!contentUrl) return null;
+
+    const url = /^https?:\/\//i.test(contentUrl)
+      ? contentUrl
+      : this.site.replace(/\/$/, '') + contentUrl;
+
+    const res = await fetchApi(url, {
+      headers: {
+        'Accept': 'application/json',
+        ...(cookie ? { Cookie: cookie } : {}),
+      },
+    });
+    const text = await res.text();
+    try {
+      return JSON.parse(text)?.data?.data ?? null;
+    } catch (e) {
+      return null;
+    }
   }
 
   /** Only attempt the sign-in link once per app run: the links are single-use. */
@@ -837,19 +873,27 @@ class WTRLAB implements Plugin.PluginBase {
         ? `session cookie sent (${cookie.length} chars)`
         : 'no session cookie set';
 
-    if (!usedType || !parsedJson?.data?.data) {
+    const content = usedType
+      ? await this.resolveChapterContent(parsedJson, cookie)
+      : null;
+
+    if (!usedType || !content || content.body === undefined) {
       const errorMsg =
         `None of the requested translations could be loaded [${cookieState}]. ` +
         (attemptLog.length
           ? attemptLog.join(' | ')
-          : 'The server returned no usable response.');
+          : usedType
+            ? 'The server accepted the request but returned no chapter content.'
+            : 'The server returned no usable response.');
       console.error(errorMsg);
       throw new Error(errorMsg);
     }
-    let chapterContent: any = parsedJson.data.data.body;
-    const chapterTitle: string | undefined = parsedJson?.chapter?.title;
+
+    let chapterContent: any = content.body;
+    const chapterTitle: string | undefined =
+      parsedJson?.chapter?.title || content.title;
     const chapterGlossary: ChapterContent['glossary_data'] | undefined =
-      parsedJson?.data?.data?.glossary_data;
+      content.glossary_data;
 
     let htmlString = '';
     if (chapterTitle) {
@@ -2081,6 +2125,13 @@ type SerieData = {
   from: null;
   raw_id: number;
   genres?: number[];
+};
+
+type ReaderResponse = {
+  success?: boolean;
+  content_url?: string;
+  chapter?: { title?: string; locked?: boolean };
+  data?: { data?: ChapterContent };
 };
 
 type RawSource = {
